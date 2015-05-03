@@ -9,7 +9,7 @@ Spark-Kafka-RDD is a scala library to make Kafka to be a data source of the Spar
 Features
 -------------------
 
-Spark-Kafka-RDD helps developers a lot.
+Spark-Kafka-RDD has several useful features.
 
 - KafkaOffsetSeeker simplifies Kafka offset seeking.
 - Given a list of brokers, KafkaRDD automatically finds the leader of a topic and partition, and handles when the leader changes.
@@ -40,9 +40,9 @@ object Main {
     val from = seeker.possibleOffsetBefore(topicAndPartition, timefrom)
     val to = seeker.latestOffset(topicAndPartition)
 
-  val fetchInfo = Map(topicAndPartition -> Seq(
-    OffsetFetchInfo(from, to)
-  ))
+    val fetchInfo = Map(topicAndPartition -> Seq(
+      OffsetFetchInfo(from, to)
+    ))
     val rdd = KafkaRDD(sparkContext, kafkaProps, fetchInfo).persist(...)
 
   ...
