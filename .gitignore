@@ -1,0 +1,10 @@
+target/
+project/target/
+project/boot/
+project/plugins/project/
+lib_managed/
+src_managed/
+.history
+.cache
+*~
+*.swp
