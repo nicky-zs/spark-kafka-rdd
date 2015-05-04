@@ -56,8 +56,10 @@ Tuning
 -------------------
 
 
-- Try to avoid fetching a large number of small range of offsets. It is inefficient because it can't fully utilize the network bandwidth. It is a good idea to fetch several pieces of large range of offsets and filter it. Of course, it depends.
+- Try to avoid fetching a large number of small range of offsets. It is inefficient because it can't fully utilize the network bandwidth. It is a good idea to fetch several pieces of large range of offsets and filter it. Of course, this isn't always true. It depends.
+- The value of "fetch.message.max.bytes" is the number of bytes KafkaRDD will fetch at one time. If this value is smaller than the size of your message, KafkaRDD won't work because it will always fetch 0 messages. Continuously fetching data for hundreds or thousands of milliseconds at one time is a good idea.
 - Any offset ranges larger than "fetch.message.max.count" will be automatically splitted into small pieces so they can be fetched simultaneously at different Spark executors. The default value of "fetch.message.max.count" is quite large. Give it a smaller value to achieve better parallelism.
+- The value of "fetch.message.max.count" and the value of "fetch.message.max.bytes" should match. According to the size of each message, a large "fetch.message.max.bytes" with a small "fetch.message.max.count" will cause KafkaRDD to drop a lot of excess data; a large "fetch.message.max.count" with a small "fetch.message.max.bytes" will cause KafkaRDD to fetch a lot of different data segments on only one Spark executor serially.
 - Adjust "spark.locality.wait" to prevent Spark from fetching the same KafkaRDD partition on another Spark executor to calculate as the executor holding this partition is busy for several seconds.
 - Persist KafkaRDD if needed. But never persist one piece of messages twice! For example, if rdd1 and rdd2 are both persisted, don't persist rdd1.union(rdd2)!
 
