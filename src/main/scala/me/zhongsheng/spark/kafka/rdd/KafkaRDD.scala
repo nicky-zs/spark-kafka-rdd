@@ -8,7 +8,7 @@ import org.apache.spark.rdd.RDD
 import kafka.common.{TopicAndPartition, ErrorMapping}
 import kafka.api.{TopicMetadataRequest, FetchRequest, PartitionFetchInfo, FetchResponsePartitionData}
 import kafka.consumer.SimpleConsumer
-import kafka.message.{Message, MessageAndOffset}
+import kafka.message.MessageAndOffset
 
 import org.slf4j.LoggerFactory
 
@@ -36,10 +36,10 @@ class KafkaRDD private (
   fetchInfo: Map[TopicAndPartition, Seq[OffsetFetchInfo]],
   fetchMessageMaxCount: Int
 )
-extends RDD[Message](_sc, Nil) {
+extends RDD[MessageAndOffset](_sc, Nil) {
   import KafkaRDD._
 
-  override def compute(split: Partition, context: TaskContext): Iterator[Message] = {
+  override def compute(split: Partition, context: TaskContext): Iterator[MessageAndOffset] = {
     if (context.attemptNumber > 1) {
       log.warn(s"Attempt ${context.attemptNumber} times for fetching ${split}")
     }

@@ -5,7 +5,7 @@ import java.util.Properties
 import kafka.common.{ErrorMapping, TopicAndPartition}
 import kafka.api.{TopicMetadataRequest, FetchRequest, PartitionFetchInfo, FetchResponsePartitionData}
 import kafka.consumer.SimpleConsumer
-import kafka.message.{Message, MessageAndOffset}
+import kafka.message.MessageAndOffset
 
 import org.slf4j.LoggerFactory
 
@@ -30,7 +30,7 @@ class KafkaStream private (config: KafkaConfig) {
   private val retries = config.retries
   private val refreshLeaderBackoffMs = config.refreshLeaderBackoffMs
 
-  def fetch(topicAndPartition: TopicAndPartition, offsetFetchInfo: OffsetFetchInfo): Stream[Message] = {
+  def fetch(topicAndPartition: TopicAndPartition, offsetFetchInfo: OffsetFetchInfo): Stream[MessageAndOffset] = {
     val OffsetFetchInfo(offsetFrom, offsetTo) = offsetFetchInfo
 
     def findLeader: KafkaBroker = Stream(1 to retries: _*).map { _ => {
@@ -103,7 +103,7 @@ class KafkaStream private (config: KafkaConfig) {
       }
     }
 
-    doFetch(makeConsumer(findLeader), offsetFrom, retries).flatten.dropWhile(_.offset < offsetFrom).map(_.message)
+    doFetch(makeConsumer(findLeader), offsetFrom, retries).flatten.dropWhile(_.offset < offsetFrom)
   }
 
 }
