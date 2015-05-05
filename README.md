@@ -26,6 +26,7 @@ Usage
 import org.apache.spark.SparkContext
 import me.zhongsheng.spark.kafka.{KafkaOffsetSeeker, OffsetFetchInfo}
 import me.zhongsheng.spark.kafka.rdd.RDD
+import me.zhongsheng.spark.kafka.serializer.StringDecoder
 
 object Main {
   
@@ -34,6 +35,7 @@ object Main {
   val topicAndPartition = ...
   val timefrom = ...
   val fetchMessageMaxCount = ... // tell KafkaRDD to split large offset range into small pieces
+  val decoder = new StringDecoder
   
   def main(args: Array[String]) {
     val sparkContext = new SparkContext(conf)
@@ -45,7 +47,8 @@ object Main {
     val fetchInfo = Map(topicAndPartition -> Seq(
       OffsetFetchInfo(from, to)
     ))
-    val rdd = KafkaRDD(sparkContext, kafkaProps, fetchInfo, fetchMessageMaxCount).persist(...)
+    val rdd = KafkaRDD(sparkContext, kafkaProps, fetchInfo,
+      fetchMessageMaxCount, decoder, decoder).persist(...)
 
     ...
   }
