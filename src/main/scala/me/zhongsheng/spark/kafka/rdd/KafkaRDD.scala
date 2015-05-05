@@ -8,20 +8,25 @@ import org.apache.spark.rdd.RDD
 import kafka.common.{TopicAndPartition, ErrorMapping}
 import kafka.api.{TopicMetadataRequest, FetchRequest, PartitionFetchInfo, FetchResponsePartitionData}
 import kafka.consumer.SimpleConsumer
-import kafka.message.MessageAndOffset
+import kafka.message.MessageAndMetadata
+import kafka.serializer.Decoder
 
 import org.slf4j.LoggerFactory
 
 import me.zhongsheng.spark.kafka.{KafkaConfig, KafkaBroker, OffsetFetchInfo, KafkaStream}
+import me.zhongsheng.spark.kafka.serializer.DefaultDecoder
 
 
 object KafkaRDD {
   private val log = LoggerFactory.getLogger(getClass)
 
-  def apply(sc: SparkContext,
+  def apply[K, V](sc: SparkContext,
     kafkaProps: Properties,
     fetchInfo: Map[TopicAndPartition, Seq[OffsetFetchInfo]],
-    fetchMessageMaxCount: Int = 1024 * 1024 * 1024) = new KafkaRDD(sc, kafkaProps, fetchInfo, fetchMessageMaxCount)
+    fetchMessageMaxCount: Int = 1024 * 1024 * 1024,
+    keyDecoder: Decoder[K] = new DefaultDecoder,
+    valueDecoder: Decoder[V] = new DefaultDecoder
+  ) = new KafkaRDD(sc, kafkaProps, fetchInfo, fetchMessageMaxCount, keyDecoder, valueDecoder)
 }
 
 /**
@@ -30,16 +35,18 @@ object KafkaRDD {
  * 
  * @param fetchMessageMaxCount a value used to cut large range of offsets into small pieces
  */
-class KafkaRDD private (
+class KafkaRDD[K, V] private (
   _sc: SparkContext,
   kafkaProps: Properties,
   fetchInfo: Map[TopicAndPartition, Seq[OffsetFetchInfo]],
-  fetchMessageMaxCount: Int
+  fetchMessageMaxCount: Int,
+  keyDecoder: Decoder[K],
+  valueDecoder: Decoder[V]
 )
-extends RDD[MessageAndOffset](_sc, Nil) {
+extends RDD[MessageAndMetadata[K, V]](_sc, Nil) {
   import KafkaRDD._
 
-  override def compute(split: Partition, context: TaskContext): Iterator[MessageAndOffset] = {
+  override def compute(split: Partition, context: TaskContext): Iterator[MessageAndMetadata[K, V]] = {
     if (context.attemptNumber > 1) {
       log.warn(s"Attempt ${context.attemptNumber} times for fetching ${split}")
     }
@@ -53,7 +60,7 @@ extends RDD[MessageAndOffset](_sc, Nil) {
     val topicAndPartition = split.asInstanceOf[KafkaRDDPartition].topicAndPartition
     val offsetFetchInfo = split.asInstanceOf[KafkaRDDPartition].offsetFetchInfo
 
-    KafkaStream(kafkaProps).fetch(topicAndPartition, offsetFetchInfo).iterator
+    KafkaStream(kafkaProps, keyDecoder, valueDecoder).fetch(topicAndPartition, offsetFetchInfo).iterator
   }
 
   protected override val getPartitions: Array[Partition] = {

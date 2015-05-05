@@ -5,21 +5,28 @@ import java.util.Properties
 import kafka.common.{ErrorMapping, TopicAndPartition}
 import kafka.api.{TopicMetadataRequest, FetchRequest, PartitionFetchInfo, FetchResponsePartitionData}
 import kafka.consumer.SimpleConsumer
-import kafka.message.MessageAndOffset
+import kafka.message.{MessageAndOffset, MessageAndMetadata}
+import kafka.serializer.Decoder
 
 import org.slf4j.LoggerFactory
+
+import me.zhongsheng.spark.kafka.serializer.DefaultDecoder
 
 
 object KafkaStream {
   private val log = LoggerFactory.getLogger(getClass)
 
-  def apply(kafkaProps: Properties): KafkaStream = new KafkaStream(KafkaConfig(kafkaProps))
+  def apply(kafkaProps: Properties): KafkaStream[Array[Byte], Array[Byte]] =
+    apply(kafkaProps, new DefaultDecoder, new DefaultDecoder)
+
+  def apply[K, V](kafkaProps: Properties, keyDecoder: Decoder[K], valueDecoder: Decoder[V]): KafkaStream[K, V] =
+    new KafkaStream(KafkaConfig(kafkaProps), keyDecoder, valueDecoder)
 }
 
 /**
  * Fetch Kafka in a streaming way.
  */
-class KafkaStream private (config: KafkaConfig) {
+class KafkaStream[K, V] private (config: KafkaConfig, keyDecoder: Decoder[K], valueDecoder: Decoder[V]) {
   import KafkaStream._
 
   private val brokers = config.metadataBrokerList.split(",").map(KafkaBroker(_))
@@ -30,8 +37,14 @@ class KafkaStream private (config: KafkaConfig) {
   private val retries = config.retries
   private val refreshLeaderBackoffMs = config.refreshLeaderBackoffMs
 
-  def fetch(topicAndPartition: TopicAndPartition, offsetFetchInfo: OffsetFetchInfo): Stream[MessageAndOffset] = {
+  def fetch(topicAndPartition: TopicAndPartition, offsetFetchInfo: OffsetFetchInfo): Stream[MessageAndMetadata[K, V]] = {
     val OffsetFetchInfo(offsetFrom, offsetTo) = offsetFetchInfo
+
+    def buildMessageAndMetadata(messageAndOffset: MessageAndOffset): MessageAndMetadata[K, V] = MessageAndMetadata(
+      topicAndPartition.topic, topicAndPartition.partition,
+      messageAndOffset.message, messageAndOffset.offset,
+      keyDecoder, valueDecoder
+    )
 
     def findLeader: KafkaBroker = Stream(1 to retries: _*).map { _ => {
       brokers.toStream.map { broker => {
@@ -56,12 +69,12 @@ class KafkaStream private (config: KafkaConfig) {
       case None => throw new Exception("Find leader failed!")
     }
 
-    def makeConsumer(broker: KafkaBroker) = {
+    def buildConsumer(broker: KafkaBroker) = {
       val KafkaBroker(leaderHost, leaderPort) = findLeader
       new SimpleConsumer(leaderHost, leaderPort, socketTimeoutMs, socketReceiveBufferBytes, consumerId)
     }
 
-    def doFetch(consumer: SimpleConsumer, offset: Long, retriesLeft: Int): Stream[Seq[MessageAndOffset]] = {
+    def doFetch(consumer: SimpleConsumer, offset: Long, retriesLeft: Int): Stream[Seq[MessageAndMetadata[K, V]]] = {
       val FetchResponsePartitionData(errorCode, _, messageSet) = consumer.fetch(FetchRequest(
         requestInfo = Map(topicAndPartition -> PartitionFetchInfo(offset, fetchMessageMaxBytes))
       )).data(topicAndPartition)
@@ -80,12 +93,12 @@ class KafkaStream private (config: KafkaConfig) {
               }
             }
             case _ => {
-              val lastOffset = messageAndOffsets.last.offset
-              if (lastOffset >= offsetTo) {
+              val lastMessageAndOffset = messageAndOffsets.last
+              if (lastMessageAndOffset.offset >= offsetTo) {
                 consumer.close()
-                messageAndOffsets.filter(_.offset <= offsetTo) #:: Stream.empty
+                messageAndOffsets.filter(_.offset <= offsetTo).map(buildMessageAndMetadata) #:: Stream.empty
               } else {
-                messageAndOffsets #:: doFetch(consumer, lastOffset + 1, retries)
+                messageAndOffsets.map(buildMessageAndMetadata) #:: doFetch(consumer, lastMessageAndOffset.nextOffset, retries)
               }
             }
           }
@@ -98,12 +111,12 @@ class KafkaStream private (config: KafkaConfig) {
         case (_, _) => {
           consumer.close()
           Thread.sleep(refreshLeaderBackoffMs)
-          doFetch(makeConsumer(findLeader), offset, retriesLeft - 1)
+          doFetch(buildConsumer(findLeader), offset, retriesLeft - 1)
         }
       }
     }
 
-    doFetch(makeConsumer(findLeader), offsetFrom, retries).flatten.dropWhile(_.offset < offsetFrom)
+    doFetch(buildConsumer(findLeader), offsetFrom, retries).flatten.dropWhile(_.offset < offsetFrom)
   }
 
 }
