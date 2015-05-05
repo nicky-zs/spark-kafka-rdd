@@ -13,7 +13,7 @@ Spark-Kafka-RDD has several useful features.
 
 - ```KafkaOffsetSeeker``` simplifies Kafka offset seeking.
 - Given a list of brokers, ```KafkaRDD``` automatically finds the leader of a topic and partition, and handles when the leader changes.
-- ```KafkaRD```D automatically retries when fetching messages failed.
+- ```KafkaRDD``` automatically retries when fetching messages failed.
 - ```KafkaRDD``` automatically split large offset ranges into small ones according to user's configuration, for better parallelism and load balance among all executors.
 
 
@@ -62,6 +62,6 @@ Tuning
 - The value of "```fetch.message.max.count```" and the value of "```fetch.message.max.bytes```" should match. According to the size of each message, a large "```fetch.message.max.bytes```" with a small "```fetch.message.max.count```" will cause ```KafkaRDD``` to drop a lot of excess data; a large "```fetch.message.max.count```" with a small "```fetch.message.max.bytes```" will cause ```KafkaRDD``` to fetch a lot of different data segments on only one Spark executor serially.
 - Adjust "```spark.locality.wait```" to prevent Spark from fetching the same ```KafkaRDD``` partition on another Spark executor to calculate as the executor holding this partition is busy for several seconds.
 - Persist ```KafkaRDD``` if needed, but never persist one piece of messages twice. For example, if ```rdd1``` and ```rdd2``` are both persisted, don't persist ```rdd1.union(rdd2)``` again. Keeping doing that in a loop or tail recursion will soon exhaust the memory.
-- If your program using Spark-Kafka-RDD is constructed in a streaming style, i.e. all the ```RDD```s are ```union```ed together individually: first the backlog ```RDD``` with all the backlog messages retrieved and then new coming ```RDD```s with real time messages ```union```ed one after another. In this case, ```collect``` a such deeply recursive ```RDD``` or any other ```RDD```s transformed from it would probably cause a ```StackOverflowError``` in ```java.io.ObjectOutputStream```. As far as I know, either enlarging ```-Xss``` option of JVM or calling ```RDD.coalesce(numPartition, shuffle = true)``` to reduce the ```RDD``` into fewer partitions before ```collect``` may help a little, but neither of them is the ultimate solution.
+- If your program is constructed in a streaming style, i.e. fetching backlog messages first and then continously append new coming real time messages. In this case, ```RDD.union``` seems to be a good solution for that. However, operations on an ```RDD``` with such deeply recursived dependencies would probably cause a ```StackOverflowError```. Neither enlarging the ```-Xss``` option of JVM nor calling ```RDD.coalesce(numPartition, shuffle = true)``` can solve it ultimately. One solution is to remove all the ```RDD```'s dependencies by using ```checkpoint```. Another solution is maintaining the ```RDD``` flow as a collection manually, only uniting them as needed.
 
 
