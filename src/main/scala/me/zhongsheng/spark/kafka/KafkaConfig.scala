@@ -24,9 +24,6 @@ class KafkaConfig private (props: VerifiableProperties) {
   val fetchMessageMaxBytes = props.getInt("fetch.message.max.bytes", DefaultFetchMessageMaxBytes)
   require(fetchMessageMaxBytes >= 1024 * 1024, "fetch.message.max.bytes must be greate than or equal to ${1024 * 1024}")
 
-  val fetchMessageMaxCount = props.getInt("fetch.message.max.count", DefaultFetchMessageMaxCount)
-  require(fetchMessageMaxCount <= 1024 * 1024 * 1024, "fetch.message.max.count must be less than or equal to ${1024 * 1024 * 1024}")
-
   val refreshLeaderBackoffMs = props.getInt("refresh.leader.backoff.ms", DefaultRefreshLeaderBackoffMs)
   require(refreshLeaderBackoffMs > 0, "refresh.leader.backoff.ms must be greater than 0")
 
@@ -42,7 +39,6 @@ object KafkaConfig {
   val DefaultSocketTimeoutMs = 30 * 1000
   val DefaultSocketReceiveBufferBytes = 64 * 1024
   val DefaultFetchMessageMaxBytes = 1024 * 1024
-  val DefaultFetchMessageMaxCount = 1024 * 1024 * 1024
   val DefaultRefreshLeaderBackoffMs = 200
   val DefaultRetries = 3
 }

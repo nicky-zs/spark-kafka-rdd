@@ -12,39 +12,37 @@ import kafka.message.{Message, MessageAndOffset}
 
 import org.slf4j.LoggerFactory
 
-import me.zhongsheng.spark.kafka.{KafkaConfig, KafkaBroker, OffsetFetchInfo}
+import me.zhongsheng.spark.kafka.{KafkaConfig, KafkaBroker, OffsetFetchInfo, KafkaStream}
 
 
 object KafkaRDD {
   private val log = LoggerFactory.getLogger(getClass)
 
-  def apply(sc: SparkContext, props: Properties, fetchInfo: Map[TopicAndPartition, Seq[OffsetFetchInfo]]) =
-    new KafkaRDD(sc, KafkaConfig(props), fetchInfo)
+  def apply(sc: SparkContext,
+    kafkaProps: Properties,
+    fetchInfo: Map[TopicAndPartition, Seq[OffsetFetchInfo]],
+    fetchMessageMaxCount: Int = 1024 * 1024 * 1024) = new KafkaRDD(sc, kafkaProps, fetchInfo, fetchMessageMaxCount)
 }
 
 /**
  * An RDD to fetch messages from a kafka cluster.
  * OffsetFetchInfo MUST be correct to avoid exceptions.
+ * 
+ * @param fetchMessageMaxCount a value used to cut large range of offsets into small pieces
  */
 class KafkaRDD private (
   _sc: SparkContext,
-  config: KafkaConfig,
-  fetchInfo: Map[TopicAndPartition, Seq[OffsetFetchInfo]]
+  kafkaProps: Properties,
+  fetchInfo: Map[TopicAndPartition, Seq[OffsetFetchInfo]],
+  fetchMessageMaxCount: Int
 )
 extends RDD[Message](_sc, Nil) {
   import KafkaRDD._
 
-  private val brokers = config.metadataBrokerList.split(",").map(KafkaBroker(_))
-  private val socketTimeoutMs = config.socketTimeoutMs
-  private val socketReceiveBufferBytes = config.socketReceiveBufferBytes
-  private val fetchMessageMaxBytes = config.fetchMessageMaxBytes
-  private val fetchMessageMaxCount = config.fetchMessageMaxCount
-  private val consumerId = config.consumerId
-  private val retries = config.retries
-  private val refreshLeaderBackoffMs = config.refreshLeaderBackoffMs
-
   override def compute(split: Partition, context: TaskContext): Iterator[Message] = {
-    if (context.attemptNumber > 1) { log.warn(s"Attempt ${context.attemptNumber} times for fetching ${split}") }
+    if (context.attemptNumber > 1) {
+      log.warn(s"Attempt ${context.attemptNumber} times for fetching ${split}")
+    }
 
     val taskStartTime = System.currentTimeMillis
     context.addTaskCompletionListener(_ => {
@@ -53,48 +51,9 @@ extends RDD[Message](_sc, Nil) {
     })
 
     val topicAndPartition = split.asInstanceOf[KafkaRDDPartition].topicAndPartition
-    val OffsetFetchInfo(offsetFrom, offsetTo) = split.asInstanceOf[KafkaRDDPartition].offsetFetchInfo
+    val offsetFetchInfo = split.asInstanceOf[KafkaRDDPartition].offsetFetchInfo
 
-    def makeConsumer(broker: KafkaBroker) = {
-      val KafkaBroker(leaderHost, leaderPort) = findLeader(topicAndPartition)
-      val consumer = new SimpleConsumer(leaderHost, leaderPort, socketTimeoutMs, socketReceiveBufferBytes, consumerId)
-      context.addTaskCompletionListener(_ => consumer.close())
-      consumer
-    }
-
-    def fetch(consumer: SimpleConsumer, offset: Long, retriesLeft: Int): Stream[MessageAndOffset] = {
-      val FetchResponsePartitionData(errorCode, _, messageSet) = consumer.fetch(FetchRequest(
-        requestInfo = Map(topicAndPartition -> PartitionFetchInfo(offset, fetchMessageMaxBytes))
-      )).data(topicAndPartition)
-
-      (errorCode, retriesLeft) match {
-        case (ErrorMapping.NoError, _) => {
-          val messageAndOffsets = messageSet.toArray
-          messageAndOffsets.length match {
-            case 0 => if (offset >= offsetTo) messageAndOffsets ++: (Stream.empty) else {
-              log.error(s"error fetch offset ${offset} at ${consumer.host}:${consumer.port} at attempt ${context.attemptNumber}")
-              throw ErrorMapping.exceptionFor(ErrorMapping.OffsetOutOfRangeCode)
-            }
-            case _ => {
-              val lastOffset = messageAndOffsets.last.offset
-              messageAndOffsets ++: (if (lastOffset >= offsetTo) Stream.empty else fetch(consumer, lastOffset + 1, retries))
-            }
-          }
-        }
-        case (_, 0) => {
-          log.error(s"error fetch offset ${offset} at ${consumer.host}:${consumer.port} at attempt ${context.attemptNumber}")
-          throw ErrorMapping.exceptionFor(errorCode)
-        }
-        case (_, _) => {
-          consumer.close()
-          Thread.sleep(refreshLeaderBackoffMs)
-          fetch(makeConsumer(findLeader(topicAndPartition)), offset, retriesLeft - 1)
-        }
-      }
-    }
-
-    fetch(makeConsumer(findLeader(topicAndPartition)), offsetFrom, retries)
-      .filter(_.offset >= offsetFrom).takeWhile(_.offset <= offsetTo).map(_.message).iterator
+    KafkaStream(kafkaProps).fetch(topicAndPartition, offsetFetchInfo).iterator
   }
 
   protected override val getPartitions: Array[Partition] = {
@@ -121,29 +80,6 @@ extends RDD[Message](_sc, Nil) {
     }.toArray
   }
 
-  private def findLeader(topicAndPartition: TopicAndPartition): KafkaBroker =
-    Stream(1 to retries: _*).map { _ => {
-      brokers.toStream.map { broker => {
-        val consumer = new SimpleConsumer(broker.host, broker.port, socketTimeoutMs, socketReceiveBufferBytes, consumerId)
-        try {
-          consumer.send(new TopicMetadataRequest(Seq(topicAndPartition.topic), 0)).topicsMetadata.toStream.flatMap {
-            case topicMeta if (topicMeta.errorCode == ErrorMapping.NoError &&
-              topicMeta.topic == topicAndPartition.topic) => topicMeta.partitionsMetadata
-          }.map {
-            case partitionMeta if (partitionMeta.errorCode == ErrorMapping.NoError &&
-              partitionMeta.partitionId == topicAndPartition.partition) => partitionMeta.leader
-          } collectFirst {
-            case Some(broker) => KafkaBroker(broker.host, broker.port)
-          }
-        } catch { case _: Throwable => None } finally { consumer.close() }
-      }} collectFirst { case Some(broker) => broker }
-    }} filter {
-      case Some(_) => true
-      case None => Thread.sleep(refreshLeaderBackoffMs); false
-    } collectFirst { case Some(broker) => broker } match {
-      case Some(broker) => broker
-      case None => throw new Exception("Find leader failed!")
-    }
 }
 
 
