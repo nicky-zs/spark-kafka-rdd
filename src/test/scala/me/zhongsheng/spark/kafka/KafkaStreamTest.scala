@@ -10,7 +10,7 @@ import org.scalatest.Suite
 class KafkaStreamTest extends Suite {
 
   private val kafkaProps = new Properties
-  kafkaProps.put("metadata.broker.list", "192.168.44.206:9092,192.168.44.210:9092")
+  kafkaProps.put("metadata.broker.list", "192.168.44.210:9092")
   kafkaProps.put("socket.receive.buffer.bytes", s"${1024 * 1024}")
   kafkaProps.put("fetch.message.max.bytes", s"${1024 * 1024}")
 

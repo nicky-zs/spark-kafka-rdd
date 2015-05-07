@@ -2,29 +2,38 @@ package me.zhongsheng.spark.kafka
 
 import java.util.Properties
 
-import kafka.consumer.SimpleConsumer
 import kafka.common.{ErrorMapping, TopicAndPartition}
-import kafka.api.{OffsetRequest, PartitionOffsetRequestInfo}
+import kafka.api.{OffsetRequest, PartitionOffsetRequestInfo, PartitionOffsetsResponse}
 
 
 class KafkaOffsetSeeker(props: Properties) {
 
-  val config = KafkaConfig(props)
-  val broker = config.metadataBrokerList.split(",").map(KafkaBroker(_)).head
+  private val config = KafkaConfig(props)
 
-  val consumer = new SimpleConsumer(broker.host, broker.port, config.socketTimeoutMs, config.socketReceiveBufferBytes, config.consumerId)
+  private val kafkaHelper = new KafkaHelper(config)
+  import kafkaHelper.{findLeader, buildConsumer}
+
+  private val earliest = -2
+  private val latest = -1
 
   def possibleOffsetBefore(topicAndPartition: TopicAndPartition, timeMillis: Long): Long = {
-    val requestInfo = Map(topicAndPartition -> PartitionOffsetRequestInfo(timeMillis, 1))
-    val resp = consumer.getOffsetsBefore(OffsetRequest(requestInfo = requestInfo)).partitionErrorAndOffsets(topicAndPartition)
-    ErrorMapping.maybeThrowException(resp.error)
-    resp.offsets.head
+    Stream.range(0, config.retries).map { _ => {
+      val request = OffsetRequest(requestInfo = Map(topicAndPartition -> PartitionOffsetRequestInfo(timeMillis, 1)))
+      val leader = buildConsumer(findLeader(topicAndPartition)) 
+      val resp = leader.getOffsetsBefore(request).partitionErrorAndOffsets(topicAndPartition)
+      leader.close()
+      resp match {
+        case PartitionOffsetsResponse(ErrorMapping.NoError, Seq(offset, _*)) => Some(offset: Long)
+        case _ => Thread.sleep(config.refreshLeaderBackoffMs); None
+      }
+    }} collectFirst { case Some(offset) => offset } match {
+      case Some(offset) => offset
+      case None => throw new Exception("Fetch offset failed!")
+    }
   }
 
-  def earliestOffset(topicAndPartition: TopicAndPartition): Long = consumer.earliestOrLatestOffset(topicAndPartition, -2, 0)
-  def latestOffset(topicAndPartition: TopicAndPartition): Long = consumer.earliestOrLatestOffset(topicAndPartition, -1, 0)
-
-  def close() = consumer.close()
+  def earliestOffset(topicAndPartition: TopicAndPartition): Long = possibleOffsetBefore(topicAndPartition, earliest)
+  def latestOffset(topicAndPartition: TopicAndPartition): Long = possibleOffsetBefore(topicAndPartition, latest)
 
 }
 

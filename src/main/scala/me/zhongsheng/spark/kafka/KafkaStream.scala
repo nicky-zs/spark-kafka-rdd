@@ -3,7 +3,7 @@ package me.zhongsheng.spark.kafka
 import java.util.Properties
 
 import kafka.common.{ErrorMapping, TopicAndPartition}
-import kafka.api.{TopicMetadataRequest, FetchRequest, PartitionFetchInfo, FetchResponsePartitionData}
+import kafka.api.{FetchRequest, PartitionFetchInfo, FetchResponsePartitionData}
 import kafka.consumer.SimpleConsumer
 import kafka.message.{MessageAndOffset, MessageAndMetadata}
 import kafka.serializer.Decoder
@@ -29,13 +29,12 @@ object KafkaStream {
 class KafkaStream[K, V] private (config: KafkaConfig, keyDecoder: Decoder[K], valueDecoder: Decoder[V]) {
   import KafkaStream._
 
-  private val brokers = config.metadataBrokerList.split(",").map(KafkaBroker(_))
-  private val socketTimeoutMs = config.socketTimeoutMs
-  private val socketReceiveBufferBytes = config.socketReceiveBufferBytes
   private val fetchMessageMaxBytes = config.fetchMessageMaxBytes
-  private val consumerId = config.consumerId
   private val retries = config.retries
   private val refreshLeaderBackoffMs = config.refreshLeaderBackoffMs
+
+  private val kafkaHelper = new KafkaHelper(config)
+  import kafkaHelper.{findLeader, buildConsumer}
 
   def fetch(topicAndPartition: TopicAndPartition, offsetFetchInfo: OffsetFetchInfo): Stream[MessageAndMetadata[K, V]] = {
     val OffsetFetchInfo(offsetFrom, offsetTo) = offsetFetchInfo
@@ -45,34 +44,6 @@ class KafkaStream[K, V] private (config: KafkaConfig, keyDecoder: Decoder[K], va
       messageAndOffset.message, messageAndOffset.offset,
       keyDecoder, valueDecoder
     )
-
-    def findLeader: KafkaBroker = Stream(1 to retries: _*).map { _ => {
-      brokers.toStream.map { broker => {
-        val consumer = new SimpleConsumer(broker.host, broker.port, socketTimeoutMs, socketReceiveBufferBytes, consumerId)
-        try {
-          consumer.send(new TopicMetadataRequest(Seq(topicAndPartition.topic), 0)).topicsMetadata.toStream.flatMap {
-            case topicMeta if (topicMeta.errorCode == ErrorMapping.NoError &&
-              topicMeta.topic == topicAndPartition.topic) => topicMeta.partitionsMetadata
-          }.map {
-            case partitionMeta if (partitionMeta.errorCode == ErrorMapping.NoError &&
-              partitionMeta.partitionId == topicAndPartition.partition) => partitionMeta.leader
-          } collectFirst {
-            case Some(broker) => KafkaBroker(broker.host, broker.port)
-          }   
-        } catch { case _: Throwable => None } finally { consumer.close() }
-      }} collectFirst { case Some(broker) => broker }
-    }} filter {
-      case Some(_) => true
-      case None => Thread.sleep(refreshLeaderBackoffMs); false
-    } collectFirst { case Some(broker) => broker } match {
-      case Some(broker) => broker
-      case None => throw new Exception("Find leader failed!")
-    }
-
-    def buildConsumer(broker: KafkaBroker) = {
-      val KafkaBroker(leaderHost, leaderPort) = findLeader
-      new SimpleConsumer(leaderHost, leaderPort, socketTimeoutMs, socketReceiveBufferBytes, consumerId)
-    }
 
     def doFetch(consumer: SimpleConsumer, offset: Long, retriesLeft: Int): Stream[Seq[MessageAndMetadata[K, V]]] = {
       val FetchResponsePartitionData(errorCode, _, messageSet) = consumer.fetch(FetchRequest(
@@ -111,12 +82,12 @@ class KafkaStream[K, V] private (config: KafkaConfig, keyDecoder: Decoder[K], va
         case (_, _) => {
           consumer.close()
           Thread.sleep(refreshLeaderBackoffMs)
-          doFetch(buildConsumer(findLeader), offset, retriesLeft - 1)
+          doFetch(buildConsumer(findLeader(topicAndPartition)), offset, retriesLeft - 1)
         }
       }
     }
 
-    doFetch(buildConsumer(findLeader), offsetFrom, retries).flatten.dropWhile(_.offset < offsetFrom)
+    doFetch(buildConsumer(findLeader(topicAndPartition)), offsetFrom, retries).flatten.dropWhile(_.offset < offsetFrom)
   }
 
 }
