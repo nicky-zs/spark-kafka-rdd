@@ -1,5 +1,7 @@
 package me.zhongsheng.spark.kafka
 
+import scala.annotation.tailrec
+
 import java.util.Properties
 
 import kafka.common.{ErrorMapping, TopicAndPartition}
@@ -7,7 +9,6 @@ import kafka.api.{OffsetRequest, PartitionOffsetRequestInfo, PartitionOffsetsRes
 
 
 class KafkaOffsetSeeker(props: Properties) {
-
   private val config = KafkaConfig(props)
 
   private val kafkaHelper = new KafkaHelper(config)
@@ -16,24 +17,31 @@ class KafkaOffsetSeeker(props: Properties) {
   private val earliest = -2
   private val latest = -1
 
-  def possibleOffsetBefore(topicAndPartition: TopicAndPartition, timeMillis: Long): Long = {
-    Stream.range(0, config.retries).map { _ => {
-      val request = OffsetRequest(requestInfo = Map(topicAndPartition -> PartitionOffsetRequestInfo(timeMillis, 1)))
+  def possibleOffsetBefore(topicAndPartition: TopicAndPartition, timeMillis: Long): Option[Long] = {
+    val requestInfo = Map(topicAndPartition -> PartitionOffsetRequestInfo(timeMillis, 1))
+    val request = OffsetRequest(requestInfo = requestInfo)
+
+    @tailrec
+    def fetchWithRetry(retries: Int): Option[Long] = {
       val leader = buildConsumer(findLeader(topicAndPartition)) 
-      val resp = leader.getOffsetsBefore(request).partitionErrorAndOffsets(topicAndPartition)
+      val response = leader.getOffsetsBefore(request)
+      val PartitionOffsetsResponse(error, offsets) = response.partitionErrorAndOffsets(topicAndPartition)
       leader.close()
-      resp match {
-        case PartitionOffsetsResponse(ErrorMapping.NoError, Seq(offset, _*)) => Some(offset: Long)
-        case _ => Thread.sleep(config.refreshLeaderBackoffMs); None
+
+      (error, retries) match {
+        case (ErrorMapping.NoError, _) => offsets.headOption
+        case (_, config.retries) => throw ErrorMapping.exceptionFor(error)
+        case (_, _) => Thread.sleep(config.refreshLeaderBackoffMs); fetchWithRetry(retries + 1)
       }
-    }} collectFirst { case Some(offset) => offset } match {
-      case Some(offset) => offset
-      case None => throw new Exception("Fetch offset failed!")
     }
+
+    fetchWithRetry(0)
   }
 
-  def earliestOffset(topicAndPartition: TopicAndPartition): Long = possibleOffsetBefore(topicAndPartition, earliest)
-  def latestOffset(topicAndPartition: TopicAndPartition): Long = possibleOffsetBefore(topicAndPartition, latest)
+  def earliestOffset(topicAndPartition: TopicAndPartition): Option[Long] =
+    possibleOffsetBefore(topicAndPartition, earliest)
 
+  def latestOffset(topicAndPartition: TopicAndPartition): Option[Long] =
+    possibleOffsetBefore(topicAndPartition, latest)
 }
 
